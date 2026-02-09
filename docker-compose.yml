@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # Tero Platform Service (Rust/Axum)
+  tero-platform:
+    build:
+      context: ../tero.platform
+      dockerfile: Dockerfile
+    image: tero-platform:latest
+    container_name: tero-platform
+    restart: unless-stopped
+    env_file:
+      - ../tero.platform/.env
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tero-network
+
+  # Tero Session Service (C#/ASP.NET)
+  tero-session:
+    build:
+      context: ../tero.session
+      dockerfile: Dockerfile
+    image: tero-session:latest
+    container_name: tero-session
+    restart: unless-stopped
+    depends_on:
+      tero-platform:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      PlatformApi__BaseUrl: http://tero-platform:3000
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - tero-network
+
+  # Cloudflare Tunnel (uncomment and configure for external access)
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: tero-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - tero-session
+      - tero-platform
+    networks:
+      - tero-network
+
+  # WireGuard VPN (uncomment if needed for secure remote access)
+  wireguard:
+    image: linuxserver/wireguard:latest
+    container_name: tero-wireguard
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-UTC}
+      SERVERURL: ${WIREGUARD_SERVER_URL:-auto}
+      SERVERPORT: ${WIREGUARD_PORT:-51820}
+      PEERS: ${WIREGUARD_PEERS:-5}
+      PEERDNS: auto
+      INTERNAL_SUBNET: 10.13.13.0
+      ALLOWEDIPS: 0.0.0.0/0
+      LOG_CONFS: ${WIREGUARD_LOG:-true}
+    volumes:
+      - wireguard_config:/config
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    networks:
+      - tero-network
+
+volumes:
+  wireguard_config:
+    driver: local
+
+networks:
+  tero-network:
+    driver: bridge
